@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Natural Surface 订单管理</title>
+
+  <!-- TailwindCSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 配置字体 -->
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+    
+    body { font-family: 'Noto Sans SC', sans-serif; }
+    .font-brand { font-family: 'Playfair Display', serif; }
+    
+    @media print {
+      .print\:hidden { display: none !important; }
+      body { background: white !important; -webkit-print-color-adjust: exact; }
+      @page { margin: 0; }
+    }
+    
+    input[type=number]::-webkit-inner-spin-button, 
+    input[type=number]::-webkit-outer-spin-button { 
+      -webkit-appearance: none; 
+      margin: 0; 
+    }
+    
+    .discount-input:hover { border-bottom: 1px dashed #ccc; }
+    .discount-input:focus { border-bottom: 1px solid #666; outline: none; }
+  </style>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- html2canvas -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body class="bg-gray-50 text-slate-800">
+
+  <div id="root"></div>
+
+  <!-- Firebase Config -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import {
+      getFirestore,
+      doc, setDoc, updateDoc, deleteDoc,
+      collection, query, where, onSnapshot, getDocs,
+      writeBatch, serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBj3FLRlhi-YlL5nhTMG3WboUsa-5oisig",
+      authDomain: "mr-ship-huangruiheng.firebaseapp.com",
+      projectId: "mr-ship-huangruiheng",
+      storageBucket: "mr-ship-huangruiheng.firebasestorage.app",
+      messagingSenderId: "281135746672",
+      appId: "1:281135746672:web:7183b4222bb3a5a8b4eeb5"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    signInAnonymously(auth).catch((e) => console.error("登录失败:", e));
+
+    const authReady = new Promise((resolve) => {
+      const unsub = onAuthStateChanged(auth, (user) => {
+        if (user) { unsub(); resolve(user); }
+      });
+    });
+
+    window.__cloud = {
+      auth, db, authReady,
+      subscribeOrders(onData, onErr) {
+        let unsub = null;
+        authReady.then((user) => {
+          const q = query(collection(db, "orders"));
+          unsub = onSnapshot(q, (snap) => {
+            const items = snap.docs.map((d) => {
+              const data = d.data() || {};
+              return { id: d.id, ...data, createdAt: Number(data.createdAtMs || data.createdAt || Date.now()) };
+            });
+            items.sort((a, b) => (Number(b.createdAtMs || b.createdAt || 0) - Number(a.createdAtMs || a.createdAt || 0)));
+            onData(items);
+          }, onErr);
+        }).catch(onErr);
+        return () => { try { unsub && unsub(); } catch {} };
+      },
+      async upsertOrder(item) {
+        const user = await authReady;
+        if (!item?.id) throw new Error("ID Missing");
+        const now = Date.now();
+        const ref = doc(db, "orders", item.id);
+        const payload = {
+          ...item,
+          uid: user.uid,
+          createdAtMs: Number(item.createdAtMs || item.createdAt || now),
+          updatedAtMs: now,
+          updatedAt: serverTimestamp(),
+          createdAt: item.createdAt ? item.createdAt : serverTimestamp()
+        };
+        await setDoc(ref, payload, { merge: true });
+        return item.id;
+      },
+      async updateOrder(id, patch) {
+        const user = await authReady;
+        const ref = doc(db, "orders", id);
+        await updateDoc(ref, { ...patch, uid: user.uid, updatedAtMs: Date.now(), updatedAt: serverTimestamp() });
+      },
+      async deleteOrder(id) {
+        await authReady;
+        await deleteDoc(doc(db, "orders", id));
+      },
+      async bulkDelete(ids) {
+        await authReady;
+        const batch = writeBatch(db);
+        ids.forEach(id => batch.delete(doc(db, "orders", id)));
+        await batch.commit();
+      },
+      async bulkUpsert(list) {
+        const user = await authReady;
+        const items = Array.isArray(list) ? list : [];
+        for (let i = 0; i < items.length; i += 450) {
+          const batch = writeBatch(db);
+          const chunk = items.slice(i, i + 450);
+          const now = Date.now();
+          for (const item of chunk) {
+            const id = item.id || (Math.random().toString(16).slice(2) + "-" + Date.now().toString(16));
+            const ref = doc(db, "orders", id);
+            batch.set(ref, {
+              ...item,
+              id,
+              uid: user.uid,
+              createdAtMs: Number(item.createdAtMs || item.createdAt || now),
+              updatedAtMs: now,
+              updatedAt: serverTimestamp(),
+              createdAt: serverTimestamp()
+            }, { merge: true });
+          }
+          await batch.commit();
+        }
+      }
+    };
+  </script>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // ==========================================
+    // ⚙️ 核心配置区 - 付款信息
+    // ==========================================
+    const COMPANY_INFO = {
+      hk: {
+        title: "汇丰银行 (HK) / HSBC",
+        bank: "The Hongkong and Shanghai Banking Corporation Limited",
+        swift: "HSBCHKHHHKH",
+        beneficiary: "HUANG RUI HENG",
+        account: "470 143272 833",
+        address: "Head Office 1 Queen's Road Central Hong Kong"
+      },
+      corporate: {
+        title: "对公账户 / Corporate",
+        bank: "中国工商银行广州东圃支行",
+        beneficiary: "广州磐艺装饰工程有限公司",
+        account: "3602021409201075093"
+      },
+      private: {
+        title: "对私账户 / Private",
+        bank: "招商银行广州分行东山支行",
+        beneficiary: "梁翠媚",
+        account: "6214 8320 8575 7123"
+      }
+    };
+
+    const CALC_CONFIG = {
+      prices: {
+        "MR01": 401, "MR02": 442, "SR0102": 726, "T0102": 873,
+        "SR03": 60, "色浆": 20, "底漆": 180, "挂网": 80, "黑沙": 20
+      },
+      specs: {
+        primerCoverage: 50, mr01Coverage: 12, mr02Coverage: 23,
+        topcoatCoverage: 40, sealerCoverage: 200,
+        ratioMr01: 0.3, ratioMr02Wall: 0.3, ratioMr02Floor: 0.6,
+        mr01Weight: 16, mr02Weight: 16, sr0102Weight: 10
+      }
+    };
+
+    const STORAGE_KEY = "packmate_orders_v12"; 
+    const safeJsonParse = (s, fallback) => { try { return JSON.parse(s); } catch { return fallback; } };
+    const loadItems = () => safeJsonParse(localStorage.getItem(STORAGE_KEY) || "[]", []);
+    const saveItems = (items) => localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+
+    const todayStr = () => new Date().toISOString().slice(0,10);
+    const uid = () => Math.random().toString(16).slice(2) + "-" + Date.now().toString(16);
+
+    // ✅ 自动生成订单号: NS-YYYYMMDD-随机数
+    const generateOrderNo = () => {
+      const date = new Date();
+      const ymd = date.toISOString().slice(0,10).replace(/-/g,"");
+      const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+      return `NS-${ymd}-${random}`;
+    };
+
+    const getProductRank = (item) => {
+      const p = (item.product || "").toUpperCase();
+      if (p.includes("MR01")) return 10;
+      if (p.includes("MR02")) return 20;
+      if (p.includes("MR03")) return 30;
+      if (p.includes("SR0102")) return 40;
+      if (p.includes("SR03")) return 50;
+      if (p.includes("T0102")) return 60;
+      if (item.category === 'paste' || p.includes("色浆")) return 70;
+      if (item.category === 'tools' || p.includes("工具") || p.includes("滚筒") || p.includes("砂纸")) return 80;
+      return 90; 
+    };
+
+    function App() {
+      const qtyInputRef = useRef(null);
+      const [items, setItems] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [viewMode, setViewMode] = useState("admin"); 
+      const [filterText, setFilterText] = useState("");
+      const [isHeaderLocked, setIsHeaderLocked] = useState(false);
+      const [editingId, setEditingId] = useState(null);
+      const [editForm, setEditForm] = useState({});
+      const [activeCategory, setActiveCategory] = useState("powder");
+      const [areaInput, setAreaInput] = useState({ wall: "", floor: "" });
+
+      // 初始化时自动生成一个订单号
+      const [newOrder, setNewOrder] = useState({
+        date: todayStr(), orderTime: "", shipTime: "", 
+        orderNo: generateOrderNo(), 
+        customer: "", address: "", product: "", spec: "",
+        qty: "", unit: "件", price: "", note: ""
+      });
+
+      const [subSelections, setSubSelections] = useState({
+        powderType: "MR01", powderWeight: "16kg", powderCustom: "", powderUnit: "包",
+        resinType: "SR0102", resinSpecType: "default", resinCustom: "", resinUnit: "组",
+        topcoatDegree: "20度", topcoatSpecType: "4L+1L", topcoatCustom: "", topcoatUnit: "组",
+        sandSpec: "", pasteModel: "", pasteSpec: "",
+        toolType: "roller", rollerSize: "6寸", rollerPack: "box",
+        paperGrit: "120#", paperPack: "box",
+        customProduct: "", customSpec: ""
+      });
+
+      useEffect(() => {
+        const cached = loadItems();
+        if (Array.isArray(cached) && cached.length) setItems(cached);
+        try {
+          window.__cloud?.subscribeOrders(
+            (cloudItems) => { setItems(Array.isArray(cloudItems) ? cloudItems : []); setLoading(false); },
+            () => { setLoading(false); }
+          );
+        } catch { setLoading(false); }
+      }, []);
+
+      useEffect(() => { if (!loading) saveItems(items); }, [items, loading]);
+
+      useEffect(() => {
+        let p = "", s = "", u = "件";
+        switch (activeCategory) {
+          case "powder":
+            p = `Natural Surface ${subSelections.powderType}`;
+            s = subSelections.powderWeight === "custom" ? subSelections.powderCustom : subSelections.powderWeight;
+            u = "桶"; break;
+          case "resin":
+            p = `Natural Surface ${subSelections.resinType}`;
+            s = subSelections.resinSpecType === "default" ? (subSelections.resinType === "SR0102" ? "5L+5L" : "120g") : subSelections.resinCustom;
+            u = subSelections.resinType === "SR0102" || subSelections.resinUnit === "组" ? "组" : "瓶"; break;
+          case "topcoat":
+            p = `POLIURETHANE T0102 ${subSelections.topcoatDegree}`;
+            s = subSelections.topcoatSpecType === "custom" ? subSelections.topcoatCustom : subSelections.topcoatSpecType;
+            u = "组"; break;
+          case "primer": p = "封闭底漆"; s = "5L"; u = "桶"; break;
+          case "sand": p = "黑沙"; s = subSelections.sandSpec || "袋装"; u = "袋"; break;
+          case "paste": p = `色浆 ${subSelections.pasteModel || ""}`; s = subSelections.pasteSpec || ""; u = "瓶"; break;
+          case "tools":
+            p = subSelections.toolType === "roller" ? `滚筒 ${subSelections.rollerSize}` : "滚筒支架";
+            s = subSelections.toolType === "roller" ? (subSelections.rollerPack === "box" ? "整盒(8个)" : "散个") : "";
+            u = subSelections.toolType === "roller" ? (subSelections.rollerPack === "box" ? "盒" : "个") : "支"; break;
+          case "paper":
+            p = `砂纸 ${subSelections.paperGrit}`; s = subSelections.paperPack === "box" ? "整盒" : "散张"; u = subSelections.paperPack === "box" ? "盒" : "张"; break;
+          case "other": p = subSelections.customProduct; s = subSelections.customSpec; u = "件"; break;
+        }
+
+        let suggestedPrice = "";
+        if (p.includes("MR01")) suggestedPrice = CALC_CONFIG.prices["MR01"];
+        else if (p.includes("MR02")) suggestedPrice = CALC_CONFIG.prices["MR02"];
+        else if (p.includes("SR0102")) suggestedPrice = CALC_CONFIG.prices["SR0102"];
+        else if (p.includes("SR03")) suggestedPrice = CALC_CONFIG.prices["SR03"];
+        else if (p.includes("T0102")) suggestedPrice = CALC_CONFIG.prices["T0102"];
+        else if (p.includes("底漆")) suggestedPrice = CALC_CONFIG.prices["底漆"];
+        else if (p.includes("色浆")) suggestedPrice = CALC_CONFIG.prices["色浆"];
+
+        setNewOrder(prev => ({ ...prev, product: p, spec: s, unit: u, price: suggestedPrice }));
+      }, [activeCategory, subSelections]);
+
+      const handleAddItem = async (e) => {
+        if (e) e.preventDefault();
+        if (!newOrder.product) return alert("请填写产品");
+        
+        const finalOrderNo = newOrder.orderNo || generateOrderNo();
+
+        const item = {
+          id: uid(), ...newOrder,
+          orderNo: finalOrderNo, 
+          qty: Number(newOrder.qty) || 0,
+          price: Number(newOrder.price) || 0,
+          total: (Number(newOrder.qty) || 0) * (Number(newOrder.price) || 0),
+          discountRate: 0, 
+          status: "pending", category: activeCategory, createdAt: Date.now()
+        };
+
+        setItems(prev => [item, ...prev]);
+        await window.__cloud?.upsertOrder(item);
+        
+        setNewOrder(prev => ({ ...prev, orderNo: finalOrderNo, qty: "", note: "", price: "" }));
+      };
+
+      const refreshOrderNo = () => {
+        setNewOrder(prev => ({ ...prev, orderNo: generateOrderNo(), customer: "", address: "" }));
+        setIsHeaderLocked(false);
+      };
+
+      const handleAutoCalculate = async () => {
+        if (!newOrder.customer) { alert("请先填写【客户名称】"); return; }
+        const wArea = parseFloat(areaInput.wall) || 0;
+        const fArea = parseFloat(areaInput.floor) || 0;
+        if (wArea === 0 && fArea === 0) { alert("请输入面积"); return; }
+
+        const finalOrderNo = newOrder.orderNo || generateOrderNo();
+        const generated = [];
+        const base = {
+          date: newOrder.date, orderTime: newOrder.orderTime, shipTime: newOrder.shipTime,
+          orderNo: finalOrderNo, customer: newOrder.customer, address: newOrder.address,
+          status: "pending", createdAt: Date.now(), discountRate: 0
+        };
+
+        const cfg = CALC_CONFIG.specs;
+        let totalResinKgNeeded = 0;
+
+        if (fArea > 0) {
+          const mr01Buckets = Math.ceil(fArea / cfg.mr01Coverage);
+          generated.push({ ...base, id: uid(), category: "powder", product: "Natural Surface MR01", spec: "16kg", unit: "桶", qty: mr01Buckets, price: CALC_CONFIG.prices["MR01"], note: `地面${fArea}㎡ (MR01做2遍)` });
+          totalResinKgNeeded += (mr01Buckets * cfg.mr01Weight * cfg.ratioMr01);
+        }
+
+        const totalMr02Area = fArea + wArea;
+        if (totalMr02Area > 0) {
+          const mr02Buckets = Math.ceil(totalMr02Area / cfg.mr02Coverage);
+          generated.push({ ...base, id: uid(), category: "powder", product: "Natural Surface MR02", spec: "16kg", unit: "桶", qty: mr02Buckets, price: CALC_CONFIG.prices["MR02"], note: `地面${fArea}㎡ + 墙面${wArea}㎡` });
+          const weightedResinRatio = (cfg.ratioMr02Floor * (fArea/totalMr02Area)) + (cfg.ratioMr02Wall * (wArea/totalMr02Area));
+          totalResinKgNeeded += (mr02Buckets * cfg.mr02Weight * weightedResinRatio);
+        }
+
+        const totalResinSets = Math.ceil((totalResinKgNeeded / cfg.sr0102Weight) + ((fArea + wArea) / cfg.sealerCoverage));
+        if (totalResinSets > 0) generated.push({ ...base, id: uid(), category: "resin", product: "Natural Surface SR0102", spec: "5L+5L", unit: "组", qty: totalResinSets, price: CALC_CONFIG.prices["SR0102"], note: "调配+封孔" });
+
+        const topcoatSets = Math.ceil((fArea + wArea) / cfg.topcoatCoverage);
+        if (topcoatSets > 0) generated.push({ ...base, id: uid(), category: "topcoat", product: "POLIURETHANE T0102", spec: "4L+1L", unit: "组", qty: topcoatSets, price: CALC_CONFIG.prices["T0102"], note: `罩面2遍 (${fArea+wArea}㎡)` });
+
+        generated.forEach(i => i.total = i.qty * i.price);
+        
+        setNewOrder(prev => ({ ...prev, orderNo: finalOrderNo }));
+        setItems(prev => [...generated, ...prev]);
+        await window.__cloud?.bulkUpsert(generated);
+        setIsHeaderLocked(true);
+      };
+
+      const groupedItems = useMemo(() => {
+        const ft = filterText.trim().toLowerCase();
+        const filtered = items.filter(item =>
+          (item.customer || "").toLowerCase().includes(ft) ||
+          (item.product || "").toLowerCase().includes(ft) ||
+          (item.orderNo || "").toLowerCase().includes(ft)
+        );
+        const groups = {};
+        for (const item of filtered) {
+          const key = `${item.date}_${item.customer}_${item.orderNo}`;
+          if (!groups[key]) {
+            groups[key] = { ...item, items: [], totalPrice: 0, discountRate: item.discountRate || 0, key };
+          }
+          groups[key].items.push(item);
+          groups[key].totalPrice += (item.total || 0);
+        }
+        
+        Object.values(groups).forEach(g => {
+          g.items.sort((a, b) => getProductRank(a) - getProductRank(b));
+        });
+
+        return Object.values(groups).sort((a,b)=> (b.date||"").localeCompare(a.date||""));
+      }, [items, filterText]);
+
+      const deleteItem = async (id) => {
+        if (!confirm("确定删除这条记录?")) return;
+        setItems(prev => prev.filter(i => i.id !== id));
+        await window.__cloud?.deleteOrder(id);
+      };
+
+      const deleteGroup = async (group) => {
+        if (!confirm(`⚠️ 高危操作\n\n确定要删除 ${group.customer} 的整张订单吗？\n包含 ${group.items.length} 条记录。`)) return;
+        const ids = group.items.map(i => i.id);
+        setItems(prev => prev.filter(i => !ids.includes(i.id)));
+        await window.__cloud?.bulkDelete(ids);
+      };
+
+      const updateGroupDiscountRate = async (group, rateVal) => {
+        const rate = Math.min(100, Math.max(0, Number(rateVal) || 0));
+        setItems(prev => prev.map(i => {
+           if (i.date === group.date && i.customer === group.customer && i.orderNo === group.orderNo) {
+             return { ...i, discountRate: rate };
+           }
+           return i;
+        }));
+        const batch = [];
+        group.items.forEach(item => {
+           batch.push({ ...item, discountRate: rate });
+        });
+        await window.__cloud?.bulkUpsert(batch);
+      };
+
+      const saveEdit = async () => {
+        if (!editingId) return;
+        const newTotal = (editForm.qty || 0) * (editForm.price || 0);
+        const patch = { ...editForm, total: newTotal };
+        setItems(prev => prev.map(it => it.id === editingId ? ({ ...it, ...patch }) : it));
+        setEditingId(null);
+        await window.__cloud?.upsertOrder(patch);
+      };
+
+      const exportJSON = () => {
+        const blob = new Blob([JSON.stringify(items, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `订单备份_${todayStr()}.json`;
+        a.click();
+      };
+
+      const exportImage = async (elementId, fileName) => {
+        const originalEl = document.getElementById(elementId);
+        if (!originalEl) return;
+
+        const clone = originalEl.cloneNode(true);
+        clone.style.width = "1000px"; 
+        clone.style.padding = "60px"; 
+        clone.style.backgroundColor = "#ffffff";
+        clone.style.position = "absolute";
+        clone.style.top = "-9999px";
+        clone.style.left = "-9999px";
+        clone.style.zIndex = "-1";
+        
+        const btn = clone.querySelector('.export-btn'); 
+        if(btn) btn.remove();
+        
+        const inputs = clone.querySelectorAll('input');
+        inputs.forEach(input => {
+            const span = document.createElement('span');
+            if (input.classList.contains('discount-input')) {
+               span.textContent = input.value;
+               span.className = 'font-mono text-gray-800'; 
+               if (Number(input.value) === 0) span.style.display = 'none';
+            } else {
+               span.textContent = input.value;
+            }
+            input.parentNode.replaceChild(span, input);
+        });
+
+        document.body.appendChild(clone);
+
+        try {
+          const images = clone.querySelectorAll('img');
+          await Promise.all(Array.from(images).map(img => {
+             if (img.complete) return Promise.resolve();
+             return new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
+          }));
+
+          const canvas = await window.html2canvas(clone, { 
+            scale: 2, 
+            useCORS: true,
+            backgroundColor: "#ffffff",
+          });
+          const link = document.createElement("a");
+          link.download = fileName;
+          link.href = canvas.toDataURL("image/jpeg", 0.95);
+          link.click();
+        } catch (e) {
+          console.error(e);
+          alert("导出图片失败，建议使用截图功能");
+        } finally {
+          document.body.removeChild(clone);
+        }
+      };
+
+      const CategoryButton = ({ id, label, emoji }) => (
+        <button onClick={() => setActiveCategory(id)} className={`flex flex-col items-center justify-center p-2 rounded-lg transition-all w-full text-sm ${activeCategory === id ? "bg-blue-600 text-white shadow-md transform scale-105 font-bold" : "bg-white text-gray-600 hover:bg-gray-50 border"}`}>
+          <div className="text-xl mb-1">{emoji}</div>{label}
+        </button>
+      );
+
+      const renderAdminView = () => (
+        <div className="space-y-6">
+          <div className={`bg-white rounded-xl shadow-md overflow-hidden border-2 transition-colors ${isHeaderLocked ? "border-blue-500 ring-4 ring-blue-50" : "border-gray-200"}`}>
+            <div className={`p-4 ${isHeaderLocked ? "bg-blue-600 text-white" : "bg-gray-50 border-b"}`}>
+              <div className="flex flex-col md:flex-row gap-4 justify-between">
+                {isHeaderLocked ? (
+                  <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-4">
+                     <div><div className="text-blue-200 text-xs">客户</div><div className="font-bold text-lg">{newOrder.customer}</div></div>
+                     <div><div className="text-blue-200 text-xs">单号</div><div className="font-bold">{newOrder.orderNo}</div></div>
+                     <div><div className="text-blue-200 text-xs">日期</div><div className="font-bold">{newOrder.date}</div></div>
+                     <div><button onClick={() => setIsHeaderLocked(false)} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded text-sm">🔓 解锁</button></div>
+                  </div>
+                ) : (
+                  <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="col-span-2 md:col-span-1"><label className="text-xs text-gray-500">客户名称</label><input className="w-full p-2 border rounded font-bold" value={newOrder.customer} onChange={e => setNewOrder({...newOrder, customer: e.target.value})} placeholder="例如: 杭州李总" /></div>
+                    <div><label className="text-xs text-gray-500">日期</label><input type="date" className="w-full p-2 border rounded" value={newOrder.date} onChange={e => setNewOrder({...newOrder, date: e.target.value})} /></div>
+                    <div>
+                      <label className="text-xs text-gray-500">单号 (自动)</label>
+                      <div className="flex gap-1">
+                        <input className="w-full p-2 border rounded bg-gray-50 text-gray-500 font-mono" value={newOrder.orderNo} onChange={e => setNewOrder({...newOrder, orderNo: e.target.value})} />
+                        <button onClick={refreshOrderNo} className="bg-gray-200 px-2 rounded hover:bg-gray-300 text-xs" title="生成新单号">🔄</button>
+                      </div>
+                    </div>
+                    <div className="col-span-2"><label className="text-xs text-gray-500">地址</label><input className="w-full p-2 border rounded" value={newOrder.address} onChange={e => setNewOrder({...newOrder, address: e.target.value})} placeholder="地址..." /></div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-indigo-50 px-4 py-3 border-b border-indigo-100 flex flex-col md:flex-row gap-4 items-center">
+              <div className="flex items-center gap-2 text-indigo-800 font-bold"><span>📐 面积算量:</span></div>
+              <div className="flex gap-2 items-center flex-1">
+                <input type="number" placeholder="墙面 (㎡)" className="p-2 border border-indigo-200 rounded w-32 focus:ring-2 focus:ring-indigo-400 outline-none" value={areaInput.wall} onChange={e => setAreaInput({...areaInput, wall: e.target.value})} />
+                <span className="text-gray-400">+</span>
+                <input type="number" placeholder="地面 (㎡)" className="p-2 border border-indigo-200 rounded w-32 focus:ring-2 focus:ring-indigo-400 outline-none" value={areaInput.floor} onChange={e => setAreaInput({...areaInput, floor: e.target.value})} />
+              </div>
+              <button onClick={handleAutoCalculate} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded shadow-sm text-sm font-bold flex items-center gap-1 transition-transform active:scale-95">⚡ 一键生成订单</button>
+            </div>
+
+            <div className="p-4 bg-white">
+              <div className="grid grid-cols-4 md:grid-cols-9 gap-2 mb-4">
+                <CategoryButton id="powder" label="干粉" emoji="🧱" />
+                <CategoryButton id="resin" label="树脂" emoji="💧" />
+                <CategoryButton id="topcoat" label="罩面" emoji="🧴" />
+                <CategoryButton id="primer" label="底漆" emoji="🧪" />
+                <CategoryButton id="sand" label="黑沙" emoji="⚫" />
+                <CategoryButton id="paste" label="色浆" emoji="🎨" />
+                <CategoryButton id="tools" label="工具" emoji="🛠️" />
+                <CategoryButton id="paper" label="砂纸" emoji="📄" />
+                <CategoryButton id="other" label="其他" emoji="➕" />
+              </div>
+
+              <div className="flex flex-col md:flex-row gap-4">
+                <div className="flex-1 bg-gray-50 p-3 rounded border">
+                   <div className="text-sm text-gray-500 mb-2 font-mono">预览: {newOrder.product} {newOrder.spec}</div>
+                   <div className="grid grid-cols-2 gap-2">
+                      {activeCategory === 'powder' && (
+                         <>
+                           <select className="p-2 border rounded" value={subSelections.powderType} onChange={e=>setSubSelections({...subSelections, powderType: e.target.value})}>
+                             <option value="MR01">MR01</option><option value="MR02">MR02</option><option value="MR03">MR03</option>
+                           </select>
+                           <select className="p-2 border rounded" value={subSelections.powderWeight} onChange={e=>setSubSelections({...subSelections, powderWeight: e.target.value})}>
+                             <option value="16kg">16kg</option><option value="custom">自定义</option>
+                           </select>
+                           {subSelections.powderWeight === 'custom' && <input className="p-2 border rounded col-span-2 bg-yellow-50" placeholder="重量" value={subSelections.powderCustom} onChange={e=>setSubSelections({...subSelections, powderCustom: e.target.value})} />}
+                         </>
+                      )}
+                      {activeCategory === 'resin' && (
+                         <>
+                           <select className="p-2 border rounded w-full" value={subSelections.resinType} onChange={e=>setSubSelections({...subSelections, resinType: e.target.value})}><option value="SR0102">SR0102</option><option value="SR03">SR03</option></select>
+                           <select className="p-2 border rounded w-full" value={subSelections.resinSpecType} onChange={e=>setSubSelections({...subSelections, resinSpecType: e.target.value})}><option value="default">默认</option><option value="custom">手填</option></select>
+                           {subSelections.resinSpecType === 'custom' && <input className="p-2 border rounded col-span-2 bg-yellow-50" placeholder="规格" value={subSelections.resinCustom} onChange={e=>setSubSelections({...subSelections, resinCustom: e.target.value})} />}
+                         </>
+                      )}
+                      {activeCategory === 'topcoat' && (
+                         <>
+                           <select className="p-2 border rounded w-full" value={subSelections.topcoatDegree} onChange={e=>setSubSelections({...subSelections, topcoatDegree: e.target.value})}>
+                             <option value="20度">20度 (默认)</option>
+                             <option value="12度">12度</option>
+                             <option value="7度">7度</option>
+                           </select>
+                           <select className="p-2 border rounded w-full" value={subSelections.topcoatSpecType} onChange={e=>setSubSelections({...subSelections, topcoatSpecType: e.target.value})}><option value="4L+1L">4L+1L</option><option value="5L+1L">5L+1L</option><option value="custom">手填</option></select>
+                           {subSelections.topcoatSpecType === 'custom' && <input className="p-2 border rounded col-span-2 bg-yellow-50" placeholder="规格" value={subSelections.topcoatCustom} onChange={e=>setSubSelections({...subSelections, topcoatCustom: e.target.value})} />}
+                         </>
+                      )}
+                      {activeCategory === 'sand' && <input className="p-2 border rounded w-full bg-yellow-50" placeholder="规格" value={subSelections.sandSpec} onChange={e=>setSubSelections({...subSelections, sandSpec: e.target.value})} />}
+                      {activeCategory === 'paste' && <><input className="p-2 border rounded w-full bg-yellow-50" placeholder="色号" value={subSelections.pasteModel} onChange={e=>setSubSelections({...subSelections, pasteModel: e.target.value})} /><input className="p-2 border rounded w-full bg-yellow-50" placeholder="规格" value={subSelections.pasteSpec} onChange={e=>setSubSelections({...subSelections, pasteSpec: e.target.value})} /></>}
+                      {activeCategory === 'other' && <input className="p-2 border rounded col-span-2" placeholder="名称" value={subSelections.customProduct} onChange={e=>setSubSelections({...subSelections, customProduct: e.target.value})} />}
+                   </div>
+                </div>
+
+                <div className="w-full md:w-80 flex gap-2">
+                   <div className="flex-1"><label className="text-xs text-gray-400">单价</label><input type="number" placeholder="0" value={newOrder.price} onChange={e => setNewOrder({...newOrder, price: e.target.value})} className="w-full p-2 border border-gray-300 rounded font-mono" /></div>
+                   <div className="flex-1"><label className="text-xs text-gray-400">数量 ({newOrder.unit})</label><input ref={qtyInputRef} type="number" placeholder="0" value={newOrder.qty} onChange={e => setNewOrder({...newOrder, qty: e.target.value})} className="w-full p-2 border border-blue-500 ring-1 ring-blue-200 rounded font-bold text-blue-600 text-lg text-center" /></div>
+                   <button onClick={handleAddItem} className="bg-green-600 text-white px-4 rounded font-bold shadow hover:bg-green-700">添加</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            {groupedItems.map(group => (
+              <div key={group.key} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                <div className="bg-gray-50 px-4 py-2 border-b flex justify-between items-center">
+                  <div>
+                    <h3 className="font-bold text-lg">{group.customer} <span className="text-sm font-normal text-gray-500">#{group.orderNo}</span></h3>
+                    <div className="text-xs text-gray-400">{group.date}</div>
+                  </div>
+                  <div className="text-right flex items-center gap-4">
+                    <div>
+                      <div className="text-xs text-gray-500">总额</div>
+                      <div className="text-lg font-bold text-red-600">¥{group.totalPrice.toLocaleString()}</div>
+                    </div>
+                    <button onClick={() => deleteGroup(group)} className="bg-red-50 text-red-600 p-2 rounded hover:bg-red-100 text-xs flex items-center gap-1" title="删除整张订单">🗑️ 删除整单</button>
+                  </div>
+                </div>
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-gray-100 text-gray-500">
+                    <tr><th className="px-4 py-2">产品</th><th className="px-4 py-2">规格</th><th className="px-4 py-2 text-center">数量</th><th className="px-4 py-2 text-right">单价</th><th className="px-4 py-2 text-right">金额</th><th className="px-4 py-2 text-center">操作</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {group.items.map(item => (
+                      <tr key={item.id} className="hover:bg-gray-50">
+                        {editingId === item.id ? (
+                           <>
+                             <td className="p-2"><input className="border w-full p-1" value={editForm.product} onChange={e=>setEditForm({...editForm, product: e.target.value})} /></td>
+                             <td className="p-2"><input className="border w-full p-1" value={editForm.spec} onChange={e=>setEditForm({...editForm, spec: e.target.value})} /></td>
+                             <td className="p-2"><input type="number" className="border w-16 p-1" value={editForm.qty} onChange={e=>setEditForm({...editForm, qty: Number(e.target.value)})} /></td>
+                             <td className="p-2"><input type="number" className="border w-20 p-1" value={editForm.price} onChange={e=>setEditForm({...editForm, price: Number(e.target.value)})} /></td>
+                             <td className="p-2 text-right text-gray-400">-</td>
+                             <td className="p-2 text-center"><button onClick={saveEdit}>💾</button></td>
+                           </>
+                        ) : (
+                          <>
+                            <td className="px-4 py-2 font-medium">{item.product}</td>
+                            <td className="px-4 py-2 text-gray-500">{item.spec}</td>
+                            <td className="px-4 py-2 text-center bg-blue-50/50 font-bold">{item.qty} {item.unit}</td>
+                            <td className="px-4 py-2 text-right text-gray-600">¥{item.price}</td>
+                            <td className="px-4 py-2 text-right font-medium">¥{item.total?.toLocaleString() || 0}</td>
+                            <td className="px-4 py-2 text-center flex justify-center gap-2">
+                              <button onClick={()=>{setEditingId(item.id); setEditForm({...item})}} className="text-blue-500">✎</button>
+                              <button onClick={()=>deleteItem(item.id)} className="text-red-500 px-2 py-1 font-bold">×</button>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+
+      const renderOrderQuote = () => (
+        <div className="max-w-4xl mx-auto min-h-screen py-8">
+          {groupedItems.map((group, idx) => {
+             // 💸 折扣改为百分比计算
+             const discountAmount = group.totalPrice * (group.discountRate / 100);
+             const finalTotal = group.totalPrice - discountAmount;
+             const domId = `order-card-${idx}`;
+             
+             return (
+              <div key={group.key} id={domId} className="mb-12 bg-white relative p-12 shadow-2xl print:shadow-none print:p-0 page-break">
+                {/* 导出按钮 (仅屏幕可见) */}
+                <div className="absolute top-4 right-4 print:hidden z-10">
+                   <button onClick={() => exportImage(domId, `Order_${group.customer}_${group.date}.jpg`)} className="export-btn bg-gray-100 text-gray-600 hover:bg-black hover:text-white px-3 py-1.5 text-xs tracking-widest uppercase transition-all">
+                     Export Image
+                   </button>
+                </div>
+
+                {/* --- 顶部品牌区 (Logo + 信息) --- */}
+                <div className="flex justify-between items-end border-b border-gray-200 pb-8 mb-8">
+                  <div>
+                    {/* ✅ 使用 Logo 图片 */}
+                    <div className="mb-2">
+                      <img 
+                        src="黑色logo.jpg" 
+                        alt="Natural Surface" 
+                        className="h-16 object-contain"
+                        onError={(e) => { e.target.style.display='none'; document.getElementById('logo-text-' + idx).style.display='block'; }}
+                      />
+                      <h1 id={`logo-text-${idx}`} className="text-5xl font-brand font-bold text-gray-900 tracking-tight" style={{display: 'none'}}>
+                        Natural Surface
+                      </h1>
+                    </div>
+                    <div className="text-xs text-gray-400 tracking-[0.2em] uppercase">Microrock & Architectural Finishes</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-bold text-gray-900 tracking-widest uppercase mb-1">Purchase Order</div>
+                    <div className="text-3xl font-light text-gray-400">#{group.orderNo}</div>
+                  </div>
+                </div>
+
+                {/* --- 信息 Grid --- */}
+                <div className="grid grid-cols-2 gap-12 mb-10 text-sm">
+                  <div>
+                    <div className="text-gray-400 text-xs uppercase tracking-wider mb-2">Bill To / 客户</div>
+                    <div className="font-bold text-gray-900 text-lg mb-1">{group.customer}</div>
+                    <div className="text-gray-500 leading-relaxed max-w-xs">{group.address || "No Address Provided"}</div>
+                  </div>
+                  <div className="flex flex-col items-end">
+                     <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-right">
+                        <div className="text-gray-400 text-xs uppercase tracking-wider">Date</div>
+                        <div className="font-medium text-gray-900">{group.date}</div>
+                        
+                        <div className="text-gray-400 text-xs uppercase tracking-wider">Shipping</div>
+                        <div className="font-medium text-gray-900">{group.shipTime || "TBD"}</div>
+                     </div>
+                  </div>
+                </div>
+
+                {/* --- 极简表格 --- */}
+                <table className="w-full text-left mb-8">
+                  <thead>
+                    <tr className="border-b border-gray-100">
+                      <th className="py-3 text-xs font-medium text-gray-400 uppercase tracking-wider w-12">No.</th>
+                      <th className="py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Item & Description</th>
+                      <th className="py-3 text-xs font-medium text-gray-400 uppercase tracking-wider text-center">Qty</th>
+                      <th className="py-3 text-xs font-medium text-gray-400 uppercase tracking-wider text-right">Price</th>
+                      <th className="py-3 text-xs font-medium text-gray-400 uppercase tracking-wider text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {group.items.map((item, i) => (
+                      <tr key={item.id} className="group">
+                        <td className="py-4 text-xs text-gray-300 font-mono align-top pt-5">{String(i + 1).padStart(2, '0')}</td>
+                        <td className="py-4 align-top">
+                           <div className="font-bold text-gray-800 text-sm mb-0.5">{item.product}</div>
+                           <div className="text-xs text-gray-500 font-light">{item.spec}</div>
+                           {item.note && <div className="text-[10px] text-gray-400 mt-1 italic">{item.note}</div>}
+                        </td>
+                        <td className="py-4 text-center align-top pt-5">
+                          <span className="font-medium text-sm text-gray-900">{item.qty}</span>
+                          <span className="text-[10px] text-gray-400 ml-1">{item.unit}</span>
+                        </td>
+                        <td className="py-4 text-right text-gray-500 text-sm align-top pt-5 font-light">¥ {item.price}</td>
+                        <td className="py-4 text-right text-gray-900 font-medium text-sm align-top pt-5">¥ {item.total?.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {/* --- 底部结算区 --- */}
+                <div className="flex flex-col items-end border-t border-gray-200 pt-6">
+                  <div className="w-64 space-y-3">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400 uppercase tracking-wider text-xs">Subtotal</span>
+                      <span className="font-medium text-gray-900">¥ {group.totalPrice.toLocaleString()}</span>
+                    </div>
+                    
+                    <div className="flex justify-between items-center text-sm group relative">
+                       <span className="text-gray-400 uppercase tracking-wider text-xs flex items-center gap-1">
+                         Discount %
+                         <span className="opacity-0 group-hover:opacity-100 transition-opacity text-xs print:hidden">✏️</span>
+                       </span>
+                       <div className="flex items-center">
+                         {group.discountRate > 0 && <span className="mr-1 text-gray-400">-</span>}
+                         <input 
+                           type="number" 
+                           className="discount-input w-12 text-right bg-transparent border-b border-transparent text-gray-900 font-medium focus:border-gray-400 transition-colors p-0 m-0"
+                           value={group.discountRate}
+                           placeholder="0"
+                           onChange={(e) => updateGroupDiscountRate(group, e.target.value)} 
+                         />
+                         <span className="ml-1 text-gray-400">%</span>
+                       </div>
+                    </div>
+                    
+                    {group.discountRate > 0 && (
+                      <div className="flex justify-between text-xs text-gray-400 italic">
+                        <span>(Off Amount)</span>
+                        <span>- ¥ {discountAmount.toLocaleString(undefined, {maximumFractionDigits: 0})}</span>
+                      </div>
+                    )}
+
+                    <div className="border-t border-gray-200 my-2"></div>
+
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-gray-900 font-bold uppercase tracking-widest text-xs">Total Due</span>
+                      <span className="text-3xl font-brand font-bold text-gray-900">
+                        <span className="text-lg align-top mr-1">¥</span>
+                        {finalTotal.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* --- 银行付款信息 (更新版) --- */}
+                <div className="mt-12 p-6 bg-gray-50 text-xs text-gray-500 rounded-lg border border-gray-100">
+                  <div className="font-bold text-gray-900 uppercase tracking-widest mb-4 text-[10px] border-b border-gray-200 pb-2">Payment Options / 付款账户</div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {/* HK */}
+                    <div className="space-y-1">
+                      <div className="font-bold text-gray-800 mb-2">{COMPANY_INFO.hk.title}</div>
+                      <div>Bank: {COMPANY_INFO.hk.bank}</div>
+                      <div>Swift: {COMPANY_INFO.hk.swift}</div>
+                      <div>Name: <span className="font-medium text-gray-900">{COMPANY_INFO.hk.beneficiary}</span></div>
+                      <div>A/C: <span className="font-mono font-bold text-gray-900">{COMPANY_INFO.hk.account}</span></div>
+                      <div className="text-[10px] text-gray-400 mt-1">{COMPANY_INFO.hk.address}</div>
+                    </div>
+
+                    {/* Corporate */}
+                    <div className="space-y-1">
+                      <div className="font-bold text-gray-800 mb-2">{COMPANY_INFO.corporate.title}</div>
+                      <div>开户行: {COMPANY_INFO.corporate.bank}</div>
+                      <div>户名: <span className="font-medium text-gray-900">{COMPANY_INFO.corporate.beneficiary}</span></div>
+                      <div>账号: <span className="font-mono font-bold text-gray-900">{COMPANY_INFO.corporate.account}</span></div>
+                    </div>
+
+                    {/* Private */}
+                    <div className="space-y-1">
+                      <div className="font-bold text-gray-800 mb-2">{COMPANY_INFO.private.title}</div>
+                      <div>开户行: {COMPANY_INFO.private.bank}</div>
+                      <div>户名: <span className="font-medium text-gray-900">{COMPANY_INFO.private.beneficiary}</span></div>
+                      <div>账号: <span className="font-mono font-bold text-gray-900">{COMPANY_INFO.private.account}</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* --- 底部 Footer --- */}
+                <div className="mt-8 pt-8 border-t border-gray-100 text-center">
+                   <div className="text-2xl font-brand italic text-gray-300 mb-2">Thank you</div>
+                   <div className="text-[10px] text-gray-400 uppercase tracking-widest">Natural Surface &middot; Architectural Finishes</div>
+                </div>
+                
+              </div>
+             );
+          })}
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen bg-gray-100 font-sans pb-20">
+          <header className="bg-white shadow-sm sticky top-0 z-20 print:hidden">
+            <div className="max-w-7xl mx-auto px-4 h-16 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                 <span className="text-xl">🏛️</span>
+                 <h1 className="font-brand font-bold text-xl tracking-tight">Natural Surface <span className="text-gray-400 font-sans font-normal text-xs ml-1">Order System</span></h1>
+              </div>
+              
+              <div className="flex-1 max-w-md mx-6">
+                 <input className="w-full bg-gray-100 border-none rounded-full px-4 py-2 text-sm focus:ring-2 focus:ring-gray-300 outline-none transition-shadow" placeholder="🔍 搜索订单..." value={filterText} onChange={e => setFilterText(e.target.value)} />
+              </div>
+
+              <div className="flex gap-2">
+                <button onClick={exportJSON} className="text-gray-400 hover:text-gray-800 text-sm px-2 transition-colors">备份</button>
+                <button onClick={() => setViewMode("admin")} className={`px-4 py-2 rounded text-xs uppercase tracking-wider font-bold transition-all ${viewMode === 'admin' ? 'bg-black text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100'}`}>Input</button>
+                <button onClick={() => setViewMode("order")} className={`px-4 py-2 rounded text-xs uppercase tracking-wider font-bold transition-all ${viewMode === 'order' ? 'bg-black text-white shadow-lg' : 'text-gray-500 hover:bg-gray-100'}`}>Orders</button>
+              </div>
+            </div>
+          </header>
+          <main className="max-w-7xl mx-auto px-4 py-6 print:p-0 print:max-w-none">
+             {loading ? <div className="text-center py-12 text-gray-400">Loading...</div> : (viewMode === "admin" ? renderAdminView() : renderOrderQuote())}
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
